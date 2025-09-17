@@ -1,0 +1,145 @@
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+- group: DevOrg
+- name: SOURCE_ORG
+  value: 'SOURCE_ALIAS'
+- name: TARGET_ORG
+  value: 'TARGET_ALIAS'
+- name: TEST_LEVEL
+  value: 'RunLocalTests'
+- name: RUN_TESTS
+  value: 'false'
+
+steps:
+# Checkout repository
+- checkout: self
+  persistCredentials: true
+  fetchDepth: 0
+
+# Install Node.js 20
+- task: NodeTool@0
+  inputs:
+    versionSpec: '20.x'
+  displayName: 'Install Node.js 20'
+
+# Install Salesforce CLI
+- script: |
+    npm install -g @salesforce/cli
+    sf --version
+  displayName: 'Install Salesforce CLI'
+
+# Install Salesforce Scanner Plugin
+- script: |
+    sf plugins install @salesforce/sfdx-scanner@4.12.0
+    sf scanner --version
+  displayName: 'Install Salesforce PMD Scanner Plugin'
+
+# Download JWT key
+- task: DownloadSecureFile@1
+  name: jwtKey
+  inputs:
+    secureFile: 'server.key'
+  displayName: 'Download JWT Key'
+
+# Authorize Source Org
+- script: |
+    sf org login jwt --client-id $(SF_SOURCE_CLIENT_ID) \
+      --jwt-key-file $(jwtKey.secureFilePath) \
+      --username $(SF_SOURCE_USERNAME) \
+      --instance-url https://login.salesforce.com \
+      --alias $(SOURCE_ORG)
+  displayName: 'Authorize Source Org'
+
+# Authorize Target Org
+- script: |
+    sf org login jwt --client-id $(SF_TARGET_CLIENT_ID) \
+      --jwt-key-file $(jwtKey.secureFilePath) \
+      --username $(SF_TARGET_USERNAME) \
+      --instance-url https://login.salesforce.com \
+      --alias $(TARGET_ORG)
+  displayName: 'Authorize Target Org'
+
+# Detect changed Apex classes & triggers (Git Delta)
+- script: |
+    echo "Detecting changed Apex files..."
+    mkdir -p src/classes src/triggers
+
+    CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+
+    for f in $CHANGED_FILES; do
+      if [[ $f == force-app/main/default/classes/*.cls ]] || [[ $f == force-app/main/default/classes/*.cls-meta.xml ]]; then
+        cp $f src/classes/ 2>/dev/null || true
+      fi
+      if [[ $f == force-app/main/default/triggers/*.trigger ]] || [[ $f == force-app/main/default/triggers/*.trigger-meta.xml ]]; then
+        cp $f src/triggers/ 2>/dev/null || true
+      fi
+    done
+
+    echo '<?xml version="1.0" encoding="UTF-8"?>' > src/package.xml
+    echo '<Package xmlns="http://soap.sforce.com/2006/04/metadata">' >> src/package.xml
+
+    for cls in src/classes/*.cls; do
+      [ -f "$cls" ] && echo "  <types><members>$(basename $cls .cls)</members><name>ApexClass</name></types>" >> src/package.xml
+    done
+    for trg in src/triggers/*.trigger; do
+      [ -f "$trg" ] && echo "  <types><members>$(basename $trg .trigger)</members><name>ApexTrigger</name></types>" >> src/package.xml
+    done
+
+    echo '  <version>56.0</version>' >> src/package.xml
+    echo '</Package>' >> src/package.xml
+
+    # Set RUN_TESTS only if Apex files exist
+    if compgen -G "src/classes/*.cls" > /dev/null || compgen -G "src/triggers/*.trigger" > /dev/null; then
+      echo "##vso[task.setvariable variable=RUN_TESTS]true"
+    else
+      echo "##vso[task.setvariable variable=RUN_TESTS]false"
+    fi
+  displayName: 'Detect Git Delta Apex Changes'
+
+# Run PMD scan on changed Apex files
+- script: |
+    echo "Running PMD scan on Apex classes and triggers..."
+    mkdir -p pmd-output
+
+    sf scanner run --target "src/classes,src/triggers" \
+                   --format html \
+                   --out pmd-output/pmd-results.html \
+                   --rulelevel HIGH
+
+    if [ $? -ne 0 ]; then
+      echo "PMD scan found high severity violations. Failing pipeline."
+      exit 1
+    fi
+  displayName: 'Run Salesforce PMD Scanner'
+
+# Publish PMD HTML results as a build artifact
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: 'pmd-output/pmd-results.html'
+    ArtifactName: 'PMD-Results'
+    publishLocation: 'Container'
+  displayName: 'Publish PMD Scan Results'
+
+# Deploy Apex to Target Org
+- script: |
+    if [ "$(RUN_TESTS)" == "true" ]; then
+      TEST_OPTION=$(TEST_LEVEL)
+    else
+      TEST_OPTION=NoTestRun
+    fi
+    sf deploy metadata --target-org $(TARGET_ORG) --manifest src/package.xml --test-level $TEST_OPTION --wait 30
+  displayName: 'Deploy Apex to Target Org'
