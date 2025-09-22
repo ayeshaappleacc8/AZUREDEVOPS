@@ -1,0 +1,130 @@
+# .azure-pipelines/deploy-on-branch.yml
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - feature/*
+      - develop
+      - release/*
+      - hotfix/*
+      - main
+      - org/*
+
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+# Select variable group + org alias by branch
+variables:
+- ${{ if startsWith(variables['Build.SourceBranchName'], 'feature/') }}:
+  - group: Salesforce-DEV
+  - name: ORG_ALIAS
+    value: DEV
+
+- ${{ if eq(variables['Build.SourceBranchName'], 'develop') }}:
+  - group: Salesforce-SIT
+  - name: ORG_ALIAS
+    value: SIT
+
+- ${{ if startsWith(variables['Build.SourceBranchName'], 'release/') }}:
+  - group: Salesforce-UAT
+  - name: ORG_ALIAS
+    value: UAT
+
+- ${{ if startsWith(variables['Build.SourceBranchName'], 'hotfix/') }}:
+  - group: Salesforce-HOTFIX
+  - name: ORG_ALIAS
+    value: HOTFIX
+
+- ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+  - group: Salesforce-PROD
+  - name: ORG_ALIAS
+    value: PROD
+
+stages:
+- stage: Validate_feature_to_develop
+  displayName: 'Validate feature to develop'
+  condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'develop'))
+  jobs:
+   - template: templates/validation-template.yml
+     parameters:
+        sfdxUrlVarName: $(sfdxurl-develop)
+        targetOrgAlias: "DEV"
+        sourceBranch: $(System.PullRequest.SourceBranch)
+        targetBranch: $(System.PullRequest.TargetBranch)
+
+- stage: Deploy_feature_to_develop
+  displayName: 'Deploy feature to develop'
+  condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.Reason'], 'IndividualCI'))
+  jobs:
+    - template: templates/deployment-template.yml
+      parameters:
+        sfdxUrlVarName: $(sfdxurl-develop)
+        targetOrgAlias: "DEV"
+        targetBranch: 'develop'
+
+- stage: Validate_feature_to_qa
+  displayName: 'Validate feature to qa'
+  condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'qa'))
+  jobs:
+    - template: templates/validation-template.yml
+      parameters:
+        sfdxUrlVarName: $(sfdxurl-qa)
+        targetOrgAlias: "SIT"
+        sourceBranch: $(System.PullRequest.SourceBranch)
+        targetBranch: $(System.PullRequest.TargetBranch)
+          
+- stage: Deploy_feature_to_qa
+  displayName: 'Deploy feature to qa'
+  condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/qa'), eq(variables['Build.Reason'], 'IndividualCI'))
+  jobs:
+    - template: templates/deployment-template.yml
+      parameters:
+        sfdxUrlVarName: $(sfdxurl-qa)
+        targetOrgAlias: "SIT"
+        targetBranch: 'qa'
+
+- stage: Validate_feature_to_stg
+  displayName: 'Validate feature to staging'
+  condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'release'))
+  jobs:
+    - template: templates/validation-template.yml
+      parameters:
+        sfdxUrlVarName: $(sfdxurl-release)
+        targetOrgAlias: "UAT"
+        sourceBranch: $(System.PullRequest.SourceBranch)
+        targetBranch: $(System.PullRequest.TargetBranch)
+          
+- stage: Deploy_feature_to_stg
+  displayName: 'Deploy feature to staging'
+  condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/release'), eq(variables['Build.Reason'], 'IndividualCI'))
+  jobs:
+    - template: templates/deployment-template.yml
+      parameters:
+        sfdxUrlVarName: $(sfdxurl-release)
+        targetOrgAlias: "UAT"
+        targetBranch: 'release'
+
+- stage: Validate_feature_to_prod
+  displayName: 'Validate feature to prod'
+  condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'main'))
+  jobs:
+    - template: templates/validation-template.yml
+      parameters:
+        sfdxUrlVarName: $(sfdxurl-main)
+        targetOrgAlias: "PROD"
+        sourceBranch: $(System.PullRequest.SourceBranch)
+        targetBranch: $(System.PullRequest.TargetBranch)
+          
+- stage: Deploy_feature_to_prod
+  displayName: 'Deploy feature to prod'
+  condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.Reason'], 'IndividualCI'))
+  jobs:
+    - template: templates/deployment-template.yml
+      parameters:
+        sfdxUrlVarName: $(sfdxurl-main)
+        targetOrgAlias: "PROD"
+        targetBranch: 'main'
+

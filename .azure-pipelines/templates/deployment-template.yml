@@ -1,0 +1,93 @@
+parameters:
+  - name: sfdxUrlVarName
+    type: string
+  - name: targetOrgAlias
+    type: string
+  - name: targetBranch
+    type: string
+
+jobs:
+  - job: DeployMetadata
+    pool:
+      name: Azure Pipelines
+    displayName: Deploy Salesforce Metadata Changes
+
+    steps:
+      - checkout: self
+        fetchDepth: 0
+        persistCredentials: true
+
+      - task: UseNode@1
+        inputs:
+          version: '20'
+        displayName: Install Node.js
+
+      - script: |
+          npm install --global @salesforce/cli
+          sf --version
+        displayName: Install Salesforce CLI
+
+      - script: |
+          echo "y" | sf plugins install sfdx-git-delta
+        displayName: Install Salesforce SGD
+
+      # Download JWT key
+      - task: DownloadSecureFile@1
+        name: jwtKey
+        inputs:
+          secureFile: 'server.key'
+        displayName: 'Download JWT Key'  
+
+      # Authorize Target Org
+      - script: |
+          sf org login jwt --client-id $(SF_TARGET_CLIENT_ID) \
+            --jwt-key-file $(jwtKey.secureFilePath) \
+            --username $(SF_TARGET_USERNAME) \
+            --instance-url https://login.salesforce.com \
+            --alias $(TARGET_ORG)
+        displayName: 'Authorize Target Org'
+
+      - script: |
+          echo "Checking for changes in package..."
+
+          git fetch origin "$(parameters.targetBranch)"
+
+          echo "Commit ID to be deployed : " $(Build.SourceVersion)
+
+          mkdir -p delta
+          sfdx sgd:source:delta --to "$(Build.SourceVersion)" --from "$(Build.SourceVersion)~1" --output-dir "delta" --source-dir "global-package"
+
+          echo "Delta files:"
+          cat delta/package/package.xml
+
+          if grep -q '<types>' delta/package/package.xml; then
+            echo "Running actual SF deployment..."
+            sf project deploy start \
+              --manifest delta/package/package.xml \
+              --target-org ${{ parameters.targetOrgAlias }} \
+              --test-level RunLocalTests \
+              --wait 30
+          else
+            echo "Package.xml empty — skipping validation."
+          fi
+
+        displayName: 'Delta Detection & Deployment'
+
+      - script: |
+          if grep -q '<types>' delta/destructiveChanges/destructiveChanges.xml; then
+            echo "Running destructive changes, Removing the following components:"
+            cat delta/destructiveChanges/destructiveChanges.xml
+      
+            echo "Deploying destructive changes..."
+            sf project deploy start \
+            --manifest delta/destructiveChanges/package.xml \
+            --post-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
+            --target-org ${{ parameters.targetOrgAlias }} \
+            --test-level RunLocalTests \
+            --ignore-warnings \
+            --wait 100 \
+            --json
+          else
+            echo "No destructive changes found. Skipping destruction step."
+          fi
+        displayName: "Delta Destruction to Target Org"

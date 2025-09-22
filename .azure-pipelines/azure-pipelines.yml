@@ -1,0 +1,117 @@
+# .azure-pipelines/deploy-on-branch.yml
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+      - release
+      - develop
+      - hotfix
+      - sit
+
+pr:  
+ branches:
+    include:
+      - '*'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+# Select variable group + org alias by branch
+variables:
+- group: SalesforceCreds
+
+stages:
+  
+  - stage: Validate_feature_to_develop
+    displayName: 'Validate feature to develop'
+    condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'develop'))
+    jobs:
+      - template: templates/validation-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_DEV_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_DEV_USERNAME)
+          TARGET_ORG: "DEV"
+          sourceBranch: $(System.PullRequest.SourceBranch)
+          targetBranch: $(System.PullRequest.TargetBranch)
+          
+  - stage: Deploy_feature_to_develop
+    displayName: 'Deploy feature to develop'
+    condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.Reason'], 'IndividualCI'))
+    jobs:
+      - template: templates/deployment-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_DEV_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_DEV_USERNAME)
+          TARGET_ORG: "DEV"
+          targetBranch: 'develop'
+
+  - stage: Validate_feature_to_qa
+    displayName: 'Validate feature to qa'
+    condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'qa'))
+    jobs:
+      - template: templates/validation-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_SIT_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_SIT_USERNAME)
+          TARGET_ORG: "SIT"
+          sourceBranch: $(System.PullRequest.SourceBranch)
+          targetBranch: $(System.PullRequest.TargetBranch)
+          
+  - stage: Deploy_feature_to_qa
+    displayName: 'Deploy feature to qa'
+    condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/qa'), eq(variables['Build.Reason'], 'IndividualCI'))
+    jobs:
+      - template: templates/deployment-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_SIT_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_SIT_USERNAME)
+          TARGET_ORG: "SIT"
+          targetBranch: 'qa'
+
+  - stage: Validate_feature_to_stg
+    displayName: 'Validate feature to staging'
+    condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'release'))
+    jobs:
+      - template: templates/validation-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_UAT_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_UAT_USERNAME)
+          TARGET_ORG: "UAT"
+          sourceBranch: $(System.PullRequest.SourceBranch)
+          targetBranch: $(System.PullRequest.TargetBranch)
+          
+  - stage: Deploy_feature_to_stg
+    displayName: 'Deploy feature to staging'
+    condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/release'), eq(variables['Build.Reason'], 'IndividualCI'))
+    jobs:
+      - template: templates/deployment-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_UAT_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_UAT_USERNAME)
+          TARGET_ORG: "UAT"
+          targetBranch: 'release'
+
+  - stage: Validate_feature_to_prod
+    displayName: 'Validate feature to prod'
+    condition: and(eq(variables['Build.Reason'], 'PullRequest'),eq(variables['System.PullRequest.TargetBranch'], 'main'))
+    jobs:
+      - template: templates/validation-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_PROD_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_PROD_USERNAME)
+          TARGET_ORG: "PROD"
+          sourceBranch: $(System.PullRequest.SourceBranch)
+          targetBranch: $(System.PullRequest.TargetBranch)
+          
+  - stage: Deploy_feature_to_prod
+    displayName: 'Merging feature to prod - No Deployment'
+    condition: and(contains(variables['Build.SourceVersionMessage'], 'Merge'),eq(variables['Build.SourceBranch'], 'refs/heads/main'), eq(variables['Build.Reason'], 'IndividualCI'))
+    jobs:
+      - template: templates/deployment-template.yml
+        parameters:
+          SF_TARGET_CLIENT_ID: $(SF_PROD_CLIENT_ID)
+          SF_TARGET_USERNAME: $(SF_PROD_USERNAME)
+          TARGET_ORG: "PROD"
+          targetBranch: 'main'

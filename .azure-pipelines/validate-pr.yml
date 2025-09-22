@@ -1,0 +1,63 @@
+# .azure-pipelines/validate-pr.yml
+trigger: none
+
+pr:
+  branches:
+    include:
+      - '*'
+
+container:
+  image: jfgarcia268/vlocity_sfdx:latest
+
+variables:
+- group: Salesforce-DEV   # assumes you have SF_DEV_* variables stored
+
+stages:
+- stage: Validate
+  displayName: PR Validation
+  jobs:
+  - job: ValidateJob
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+      fetchDepth: 0
+
+    - script: |
+        echo y | sf plugins install sfdx-git-delta || true
+      displayName: Install sfdx-git-delta
+
+    - script: |
+        BASE="${SYSTEM_PULLREQUEST_TARGETBRANCH:-origin/develop}"
+        echo "Generating delta from $BASE to HEAD"
+        sf sgd source delta --from "$BASE" --to "HEAD" \
+          --output-dir "package" --generate-delta --api-version 58.0
+      displayName: Generate delta
+
+    - script: |
+        if [ ! -f package/package.xml ]; then
+          echo "No changes detected - skipping validation"
+          exit 0
+        fi
+
+        echo "$SF_DEV_PRIVATE_KEY" > jwt.key
+        sf org login jwt \
+          --client-id $SF_DEV_CLIENT_ID \
+          --jwt-key-file jwt.key \
+          --username $SF_DEV_USERNAME \
+          --instance-url https://test.salesforce.com \
+          --alias DEV
+
+        if [ -f package/destructiveChanges/destructiveChanges.xml ]; then
+          sf project deploy start --manifest package/package.xml \
+            --post-destructive-changes package/destructiveChanges/destructiveChanges.xml \
+            --target-org DEV --wait 10 --checkonly --test-level RunLocalTests
+        else
+          sf project deploy start --manifest package/package.xml \
+            --target-org DEV --wait 10 --checkonly --test-level RunLocalTests
+        fi
+      displayName: Validate deploy
+      env:
+        SF_DEV_CLIENT_ID: $(SF_DEV_CLIENT_ID)
+        SF_DEV_PRIVATE_KEY: $(SF_DEV_PRIVATE_KEY)
+        SF_DEV_USERNAME: $(SF_DEV_USERNAME)
